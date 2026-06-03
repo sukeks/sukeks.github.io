@@ -1,16 +1,72 @@
 #!/bin/bash
 
+# ==========================================
+# CONFIGURATION & DEFAULTS
+# ==========================================
 MASTER="origin/master"
 DEVELOP="origin/develop"
 QA="origin/qa"
 OUTPUT="audit_report.html"
+FETCH=true
+STALE_THRESHOLD=30 # Days
 
-# FIX 1: Quotes added here to handle spaces in your directory path
+# Terminal Colors
+C_RED='\033[0;31m'
+C_GREEN='\033[0;32m'
+C_YELLOW='\033[0;33m'
+C_BLUE='\033[0;34m'
+C_NC='\033[0m' # No Color
+
+# ==========================================
+# CLI ARGUMENT PARSING
+# ==========================================
+while [[ "$#" -gt 0 ]]; do
+  case $1 in
+    --no-fetch) FETCH=false; shift ;;
+    --stale-days) STALE_THRESHOLD="$2"; shift 2 ;;
+    -o|--output) OUTPUT="$2"; shift 2 ;;
+    -h|--help) 
+      echo -e "${C_BLUE}Git Branch Audit Tool${C_NC}"
+      echo "Usage: bash audit_report.sh [options]"
+      echo "Options:"
+      echo "  --no-fetch          Skip 'git fetch' (runs faster for local testing)"
+      echo "  --stale-days <N>    Flag branches as stale if inactive for N days (default: 30)"
+      echo "  -o, --output <file> Specify custom HTML output filename"
+      echo "  -h, --help          Show this help message"
+      exit 0 
+      ;;
+    *) echo -e "${C_RED}Unknown parameter passed: $1${C_NC}"; exit 1 ;;
+  esac
+done
+
+# ==========================================
+# PRE-FLIGHT CHECKS
+# ==========================================
+if ! command -v git &> /dev/null; then
+  echo -e "${C_RED}❌ Error: git is not installed or not in PATH.${C_NC}"
+  exit 1
+fi
+
+if ! git rev-parse --is-inside-work-tree &> /dev/null; then
+  echo -e "${C_RED}❌ Error: This script must be run inside a git repository.${C_NC}"
+  exit 1
+fi
+
 REPO_NAME=$(basename "$(git rev-parse --show-toplevel 2>/dev/null)" || echo "Repository")
 REPORT_DATE=$(date +"%Y-%m-%d %H:%M:%S")
+CURRENT_TS=$(date +%s)
 
-echo "Fetching from remote..."
-git fetch --all --prune -q
+if [ "$FETCH" = true ]; then
+  echo -e "${C_BLUE}🔄 Fetching from remote repository...${C_NC}"
+  git fetch --all --prune -q
+else
+  echo -e "${C_YELLOW}⏭️  Skipping remote fetch (--no-fetch)...${C_NC}"
+fi
+
+# ==========================================
+# BRANCH PROCESSING LOGIC
+# ==========================================
+echo -e "${C_BLUE}🔍 Analyzing feature branches and commit history...${C_NC}"
 
 FEATURE_BRANCHES=$(git branch -r | grep -v "HEAD\|master\|develop\|qa\|release\|hotfix" | sed 's/^ *//')
 
@@ -18,23 +74,42 @@ VIOLATIONS=""
 OK_BRANCHES=""
 VIOLATION_COUNT=0
 OK_COUNT=0
+STALE_COUNT=0
 
 for BRANCH in $FEATURE_BRANCHES; do
   FORK=$(git merge-base $MASTER $BRANCH 2>/dev/null)
   [ -z "$FORK" ] && continue
 
   ON_MASTER=$(git branch -r --contains $FORK 2>/dev/null | grep "origin/master" | wc -l | tr -d ' ')
-  CREATOR=$(git log $BRANCH --not $MASTER --pretty=format:"%an" --date=short | tail -1)
-  EMAIL=$(git log $BRANCH --not $MASTER --pretty=format:"%ae" --date=short | tail -1)
-  DATE=$(git log $BRANCH --not $MASTER --pretty=format:"%ad" --date=short | tail -1)
   COMMITS=$(git log $BRANCH --not $MASTER --oneline | wc -l | tr -d ' ')
+  
+  # Fetch author, email, readable date, and unix timestamp in one git call
+  META=$(git log $BRANCH --not $MASTER -1 --pretty=format:"%an|%ae|%ad|%ct" --date=short 2>/dev/null)
+  CREATOR=$(echo "$META" | cut -d'|' -f1)
+  EMAIL=$(echo "$META" | cut -d'|' -f2)
+  DATE=$(echo "$META" | cut -d'|' -f3)
+  COMMIT_TS=$(echo "$META" | cut -d'|' -f4)
 
+  # Calculate branch age (Stale check)
+  if [ -n "$COMMIT_TS" ]; then
+    DAYS_INACTIVE=$(( (CURRENT_TS - COMMIT_TS) / 86400 ))
+  else
+    DAYS_INACTIVE=0
+  fi
+
+  STALE_BADGE=""
+  if [ "$DAYS_INACTIVE" -gt "$STALE_THRESHOLD" ]; then
+    STALE_BADGE="<span class=\"badge purple\">Stale (${DAYS_INACTIVE}d)</span>"
+    STALE_COUNT=$((STALE_COUNT + 1))
+  else
+    STALE_BADGE="<span style=\"color:#888; font-size:12px;\">${DAYS_INACTIVE}d ago</span>"
+  fi
+
+  # Identify Violations
   if [ "$ON_MASTER" -eq "0" ]; then
     VIOLATION_COUNT=$((VIOLATION_COUNT + 1))
     
     ON_DEV=$(git branch -r --contains $FORK 2>/dev/null | grep "origin/develop" | wc -l | tr -d ' ')
-    
-    # Violation Type 1 & 2: branched from develop or qa instead of master
     [ "$ON_DEV" -gt "0" ] && SOURCE="develop" || SOURCE="qa"
 
     VIOLATIONS="${VIOLATIONS}
@@ -42,125 +117,152 @@ for BRANCH in $FEATURE_BRANCHES; do
       <td><span class=\"badge red\">${BRANCH##origin/}</span></td>
       <td>from ${SOURCE}</td>
       <td>${CREATOR}</td>
-      <td>${EMAIL}</td>
       <td>${DATE}</td>
+      <td>${STALE_BADGE}</td>
       <td>${COMMITS}</td>
       <td><code>${FORK:0:7}</code></td>
     </tr>"
   else
     OK_COUNT=$((OK_COUNT + 1))
     
-    # Correct flow: branched from master
     OK_BRANCHES="${OK_BRANCHES}
     <tr class=\"ok\">
       <td><span class=\"badge green\">${BRANCH##origin/}</span></td>
       <td>from master</td>
       <td>${CREATOR}</td>
-      <td>${EMAIL}</td>
       <td>${DATE}</td>
+      <td>${STALE_BADGE}</td>
       <td>${COMMITS}</td>
       <td><code>${FORK:0:7}</code></td>
     </tr>"
   fi
 done
 
-# FIX 2: --first-parent added to correctly identify Type 3 direct pushes
+# ==========================================
+# DIRECT PUSH LOGIC
+# ==========================================
 DIRECT_DEV=$(git log $DEVELOP --not $MASTER --first-parent --no-merges \
-  --pretty=format:"<tr class=\"direct\"><td><span class=\"badge amber\">develop</span></td><td>%an</td><td>%ae</td><td>%ad</td><td>%s</td><td><code>%h</code></td></tr>" \
+  --pretty=format:"<tr class=\"direct\"><td><span class=\"badge amber\">develop</span></td><td>%an</td><td>%ad</td><td>%s</td><td><code>%h</code></td></tr>" \
   --date=short)
 
 DIRECT_QA=$(git log $QA --not $MASTER --first-parent --no-merges \
-  --pretty=format:"<tr class=\"direct\"><td><span class=\"badge amber\">qa</span></td><td>%an</td><td>%ae</td><td>%ad</td><td>%s</td><td><code>%h</code></td></tr>" \
+  --pretty=format:"<tr class=\"direct\"><td><span class=\"badge amber\">qa</span></td><td>%an</td><td>%ad</td><td>%s</td><td><code>%h</code></td></tr>" \
   --date=short)
 
-# FIX 3: Search for `<tr` instead of `<tr>` to accurately count rows with CSS classes
-DIRECT_COUNT=$(echo -e "${DIRECT_DEV}\n${DIRECT_QA}" | grep -c "<tr")
+DEV_COUNT=$( [ -z "$DIRECT_DEV" ] && echo 0 || echo "$DIRECT_DEV" | wc -l | tr -d ' ' )
+QA_COUNT=$( [ -z "$DIRECT_QA" ] && echo 0 || echo "$DIRECT_QA" | wc -l | tr -d ' ' )
+DIRECT_COUNT=$((DEV_COUNT + QA_COUNT))
+
+# ==========================================
+# HTML GENERATION & FORMATTING
+# ==========================================
+[ -z "$VIOLATIONS" ] && VIOLATIONS="<tr><td colspan='7' style='text-align:center; padding:30px; color:#888;'>🎉 No violations found. Workflow is clean!</td></tr>"
+[ -z "$OK_BRANCHES" ] && OK_BRANCHES="<tr><td colspan='7' style='text-align:center; padding:30px; color:#888;'>No standard feature branches found.</td></tr>"
+
+if [ "$DIRECT_COUNT" -eq 0 ]; then
+  DIRECT_ROWS="<tr><td colspan='5' style='text-align:center; padding:30px; color:#888;'>🎉 No direct pushes detected!</td></tr>"
+else
+  DIRECT_ROWS="${DIRECT_DEV}
+  ${DIRECT_QA}"
+fi
+
+TOTAL_BRANCHES=$(( VIOLATION_COUNT + OK_COUNT ))
 
 cat > "$OUTPUT" << HTMLEOF
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Branch Audit — ${REPO_NAME}</title>
+  <title>Audit Report — ${REPO_NAME}</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-           max-width: 1100px; margin: 40px auto; padding: 0 24px;
-           background: #f8f8f6; color: #1a1a18; font-size: 14px; }
-    h1 { font-size: 22px; font-weight: 600; margin-bottom: 4px; }
-    .meta { color: #888; font-size: 13px; margin-bottom: 28px; }
-    .summary { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; margin-bottom: 32px; }
-    .metric { background: #fff; border: 1px solid #e8e8e4; border-radius: 10px;
-              padding: 16px; text-align: center; }
-    .metric .val { font-size: 32px; font-weight: 600; }
-    .metric .lbl { font-size: 12px; color: #888; margin-top: 4px; }
-    .red-val { color: #c0392b; }
-    .green-val { color: #27ae60; }
-    .amber-val { color: #d68910; }
-    section { margin-bottom: 32px; }
-    h2 { font-size: 15px; font-weight: 600; margin-bottom: 12px;
-         padding-bottom: 8px; border-bottom: 1px solid #e8e8e4; }
-    table { width: 100%; border-collapse: collapse; background: #fff;
-            border: 1px solid #e8e8e4; border-radius: 10px; overflow: hidden; }
-    th { text-align: left; padding: 10px 14px; background: #f4f4f0;
-         font-size: 12px; color: #666; font-weight: 500; }
-    td { padding: 10px 14px; border-top: 1px solid #f0f0ec; font-size: 13px; }
-    tr.violation td { background: #fff9f9; }
-    tr.ok td { background: #f9fff9; }
-    tr.direct td { background: #fffbf2; }
-    .badge { display: inline-block; padding: 2px 9px; border-radius: 99px;
-             font-size: 11px; font-weight: 600; }
-    .badge.red { background: #fde8e8; color: #922b21; }
-    .badge.green { background: #e8f8ee; color: #1e7e34; }
-    .badge.amber { background: #fef9e7; color: #9a7d0a; }
-    code { font-family: 'SF Mono', Consolas, monospace; font-size: 11px;
-           background: #f0f0ec; padding: 1px 5px; border-radius: 4px; }
-    .footer { font-size: 12px; color: #aaa; margin-top: 40px; text-align: center; }
+    :root { --bg: #f8f9fa; --card: #ffffff; --text: #212529; --border: #e9ecef; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+           max-width: 1200px; margin: 40px auto; padding: 0 24px;
+           background: var(--bg); color: var(--text); font-size: 14px; }
+    h1 { font-size: 24px; font-weight: 700; margin-bottom: 4px; letter-spacing: -0.5px; }
+    .meta { color: #6c757d; font-size: 13px; margin-bottom: 32px; }
+    .summary { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; margin-bottom: 40px; }
+    .metric { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+              padding: 20px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.02); }
+    .metric .val { font-size: 36px; font-weight: 700; letter-spacing: -1px; }
+    .metric .lbl { font-size: 13px; color: #6c757d; margin-top: 6px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;}
+    .red-val { color: #dc3545; }
+    .green-val { color: #198754; }
+    .amber-val { color: #fd7e14; }
+    .purple-val { color: #6f42c1; }
+    section { margin-bottom: 40px; }
+    h2 { font-size: 16px; font-weight: 600; margin-bottom: 16px; display: flex; align-items: center; gap: 8px;}
+    table { width: 100%; border-collapse: collapse; background: var(--card);
+            border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.02); }
+    th { text-align: left; padding: 12px 16px; background: #f1f3f5;
+         font-size: 12px; color: #495057; font-weight: 600; text-transform: uppercase; }
+    td { padding: 12px 16px; border-top: 1px solid var(--border); font-size: 13px; vertical-align: middle; }
+    tr:hover td { background-color: #f8f9fa; }
+    .badge { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 6px;
+             font-size: 11px; font-weight: 600; letter-spacing: 0.3px; }
+    .badge.red { background: #f8d7da; color: #842029; }
+    .badge.green { background: #d1e7dd; color: #0f5132; }
+    .badge.amber { background: #ffe5d0; color: #9a4700; }
+    .badge.purple { background: #e0cffc; color: #3d1a87; }
+    code { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px;
+           background: #f1f3f5; padding: 3px 6px; border-radius: 4px; color: #d63384; }
+    .footer { font-size: 12px; color: #adb5bd; margin-top: 60px; text-align: center; border-top: 1px solid var(--border); padding-top: 20px;}
   </style>
 </head>
 <body>
 
 <h1>Branch Audit Report — ${REPO_NAME}</h1>
-<div class="meta">Generated: ${REPORT_DATE}  ·  Rule: all feature branches must be created from master</div>
+<div class="meta">Generated: ${REPORT_DATE}  ·  Threshold: Stale if inactive > ${STALE_THRESHOLD} days</div>
 
 <div class="summary">
-  <div class="metric"><div class="val red-val">${VIOLATION_COUNT}</div><div class="lbl">Violations</div></div>
-  <div class="metric"><div class="val green-val">${OK_COUNT}</div><div class="lbl">Following rules</div></div>
-  <div class="metric"><div class="val amber-val">${DIRECT_COUNT}</div><div class="lbl">Direct pushes</div></div>
-  <div class="metric"><div class="val">$(( VIOLATION_COUNT + OK_COUNT ))</div><div class="lbl">Total branches</div></div>
+  <div class="metric"><div class="val $([ "$VIOLATION_COUNT" -gt 0 ] && echo "red-val" || echo "green-val")">${VIOLATION_COUNT}</div><div class="lbl">Violations</div></div>
+  <div class="metric"><div class="val $([ "$DIRECT_COUNT" -gt 0 ] && echo "amber-val" || echo "green-val")">${DIRECT_COUNT}</div><div class="lbl">Direct Pushes</div></div>
+  <div class="metric"><div class="val $([ "$STALE_COUNT" -gt 0 ] && echo "purple-val" || echo "green-val")">${STALE_COUNT}</div><div class="lbl">Stale Branches</div></div>
+  <div class="metric"><div class="val green-val">${OK_COUNT}</div><div class="lbl">Following Rules</div></div>
+  <div class="metric"><div class="val">${TOTAL_BRANCHES}</div><div class="lbl">Total Branches</div></div>
 </div>
 
 <section>
-  <h2>❌ Violations — not branched from master</h2>
+  <h2>❌ Violations (Branched incorrectly)</h2>
   <table>
-    <tr><th>Branch</th><th>Source</th><th>Author</th><th>Email</th><th>Date</th><th>Commits</th><th>Fork SHA</th></tr>
+    <tr><th>Branch</th><th>Source</th><th>Author</th><th>Last Commit</th><th>Activity</th><th>Commits</th><th>Fork SHA</th></tr>
     ${VIOLATIONS}
   </table>
 </section>
 
 <section>
-  <h2>⚠️ Direct pushes (no feature branch)</h2>
+  <h2>⚠️ Direct Pushes (Bypassed feature branches)</h2>
   <table>
-    <tr><th>Target</th><th>Author</th><th>Email</th><th>Date</th><th>Message</th><th>SHA</th></tr>
-    ${DIRECT_DEV}
-    ${DIRECT_QA}
+    <tr><th>Target</th><th>Author</th><th>Date</th><th>Commit Message</th><th>SHA</th></tr>
+    ${DIRECT_ROWS}
   </table>
 </section>
 
 <section>
-  <h2>✅ Correct — branched from master</h2>
+  <h2>✅ Correct Workflow (Branched from master)</h2>
   <table>
-    <tr><th>Branch</th><th>Status</th><th>Author</th><th>Email</th><th>Date</th><th>Commits</th><th>Fork SHA</th></tr>
+    <tr><th>Branch</th><th>Status</th><th>Author</th><th>Last Commit</th><th>Activity</th><th>Commits</th><th>Fork SHA</th></tr>
     ${OK_BRANCHES}
   </table>
 </section>
 
-<div class="footer">Generated by audit_report.sh</div>
+<div class="footer">Generated automatically by git-audit script</div>
 
 </body>
 </html>
 HTMLEOF
 
-echo "✓ Report saved to: ${OUTPUT}"
-echo "  Violations : ${VIOLATION_COUNT}"
-echo "  Clean      : ${OK_COUNT}"
-echo "  Direct push: ${DIRECT_COUNT}"
+# ==========================================
+# TERMINAL OUTPUT SUMMARY
+# ==========================================
+echo ""
+echo -e "${C_GREEN}✓ Report successfully saved to: ${OUTPUT}${C_NC}"
+echo "-------------------------------------"
+echo -e "📊 ${C_BLUE}Audit Summary${C_NC}"
+echo -e "-------------------------------------"
+echo -e "  Total Branches : ${TOTAL_BRANCHES}"
+echo -e "  Clean Flow     : ${C_GREEN}${OK_COUNT}${C_NC}"
+echo -e "  Violations     : $([ "$VIOLATION_COUNT" -gt 0 ] && echo "${C_RED}${VIOLATION_COUNT}${C_NC}" || echo "${C_GREEN}0${C_NC}")"
+echo -e "  Direct Pushes  : $([ "$DIRECT_COUNT" -gt 0 ] && echo "${C_YELLOW}${DIRECT_COUNT}${C_NC}" || echo "${C_GREEN}0${C_NC}")"
+echo -e "  Stale Branches : $([ "$STALE_COUNT" -gt 0 ] && echo "${C_RED}${STALE_COUNT}${C_NC} (> ${STALE_THRESHOLD} days)" || echo "${C_GREEN}0${C_NC}")"
+echo "-------------------------------------"
