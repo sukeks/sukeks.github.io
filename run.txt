@@ -1,0 +1,3 @@
+chmod +x audit_report.sh && bash audit_report.sh
+start audit_report.html
+bash audit_report.sh --json
