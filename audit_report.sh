@@ -5,8 +5,8 @@ DEVELOP="origin/develop"
 QA="origin/qa"
 OUTPUT="audit_report.html"
 
-# Adding generic fallbacks if git variables aren't set in the environment
-REPO_NAME=$(basename $(git rev-parse --show-toplevel 2>/dev/null) || echo "Repository")
+# FIX 1: Quotes added here to handle spaces in your directory path
+REPO_NAME=$(basename "$(git rev-parse --show-toplevel 2>/dev/null)" || echo "Repository")
 REPORT_DATE=$(date +"%Y-%m-%d %H:%M:%S")
 
 echo "Fetching from remote..."
@@ -31,11 +31,12 @@ for BRANCH in $FEATURE_BRANCHES; do
 
   if [ "$ON_MASTER" -eq "0" ]; then
     VIOLATION_COUNT=$((VIOLATION_COUNT + 1))
+    
     ON_DEV=$(git branch -r --contains $FORK 2>/dev/null | grep "origin/develop" | wc -l | tr -d ' ')
-    ON_QA=$(git branch -r --contains $FORK 2>/dev/null | grep "origin/qa" | wc -l | tr -d ' ')
+    
+    # Violation Type 1 & 2: branched from develop or qa instead of master
     [ "$ON_DEV" -gt "0" ] && SOURCE="develop" || SOURCE="qa"
 
-    # Restored HTML table rows
     VIOLATIONS="${VIOLATIONS}
     <tr class=\"violation\">
       <td><span class=\"badge red\">${BRANCH##origin/}</span></td>
@@ -49,7 +50,7 @@ for BRANCH in $FEATURE_BRANCHES; do
   else
     OK_COUNT=$((OK_COUNT + 1))
     
-    # Restored HTML table rows
+    # Correct flow: branched from master
     OK_BRANCHES="${OK_BRANCHES}
     <tr class=\"ok\">
       <td><span class=\"badge green\">${BRANCH##origin/}</span></td>
@@ -63,19 +64,18 @@ for BRANCH in $FEATURE_BRANCHES; do
   fi
 done
 
-# Restored HTML table rows for direct commits
-DIRECT_DEV=$(git log $DEVELOP --not $MASTER --no-merges \
+# FIX 2: --first-parent added to correctly identify Type 3 direct pushes
+DIRECT_DEV=$(git log $DEVELOP --not $MASTER --first-parent --no-merges \
   --pretty=format:"<tr class=\"direct\"><td><span class=\"badge amber\">develop</span></td><td>%an</td><td>%ae</td><td>%ad</td><td>%s</td><td><code>%h</code></td></tr>" \
   --date=short)
 
-DIRECT_QA=$(git log $QA --not $MASTER --no-merges \
+DIRECT_QA=$(git log $QA --not $MASTER --first-parent --no-merges \
   --pretty=format:"<tr class=\"direct\"><td><span class=\"badge amber\">qa</span></td><td>%an</td><td>%ae</td><td>%ad</td><td>%s</td><td><code>%h</code></td></tr>" \
   --date=short)
 
-# FIX 1: Properly close the command substitution and grep query to count the commits
-DIRECT_COUNT=$(echo -e "${DIRECT_DEV}\n${DIRECT_QA}" | grep -c "<tr>")
+# FIX 3: Search for `<tr` instead of `<tr>` to accurately count rows with CSS classes
+DIRECT_COUNT=$(echo -e "${DIRECT_DEV}\n${DIRECT_QA}" | grep -c "<tr")
 
-# FIX 2: Properly initiate writing the Heredoc to your output file
 cat > "$OUTPUT" << HTMLEOF
 <!DOCTYPE html>
 <html>
