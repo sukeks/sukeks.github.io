@@ -41,13 +41,13 @@
 <body>
 
 <h1>Branch Audit Report — Repository</h1>
-<div class="meta">Generated: 2026-06-03 17:14:28  ·  Rule: all feature branches must be created from master</div>
+<div class="meta">Generated: 2026-06-03 17:17:32  ·  Rule: all feature branches must be created from master</div>
 
 <div class="summary">
   <div class="metric"><div class="val red-val">0</div><div class="lbl">Violations</div></div>
-  <div class="metric"><div class="val green-val">0</div><div class="lbl">Following rules</div></div>
+  <div class="metric"><div class="val green-val">1</div><div class="lbl">Following rules</div></div>
   <div class="metric"><div class="val amber-val">0</div><div class="lbl">Direct pushes</div></div>
-  <div class="metric"><div class="val">0</div><div class="lbl">Total branches</div></div>
+  <div class="metric"><div class="val">1</div><div class="lbl">Total branches</div></div>
 </div>
 
 <section>
@@ -62,7 +62,7 @@
   <h2>⚠️ Direct pushes (no feature branch)</h2>
   <table>
     <tr><th>Target</th><th>Author</th><th>Email</th><th>Date</th><th>Message</th><th>SHA</th></tr>
-    
+    <tr class="direct"><td><span class="badge amber">develop</span></td><td>sukeks</td><td>sukeks1994@gmail.com</td><td>2026-06-03</td><td>Add branch audit report generation script and HTML output</td><td><code>50a6110</code></td></tr>
     
   </table>
 </section>
@@ -72,6 +72,15 @@
   <table>
     <tr><th>Branch</th><th>Status</th><th>Author</th><th>Email</th><th>Date</th><th>Commits</th><th>Fork SHA</th></tr>
     
+    <tr class="ok">
+      <td><span class="badge green">git_test</span></td>
+      <td>from master</td>
+      <td>sukeks</td>
+      <td>sukeks1994@gmail.com</td>
+      <td>2026-06-03</td>
+      <td>1</td>
+      <td><code>44056c1</code></td>
+    </tr>
   </table>
 </section>
 
