@@ -1,3 +1,13 @@
 chmod +x audit_report.sh && bash audit_report.sh
 start audit_report.html
 bash audit_report.sh --json
+
+bash audit_month.sh --month june-2026 --no-fetch
+
+bash audit_month.sh --month january-2026 --no-fetch
+bash audit_month.sh --month february-2026 --no-fetch
+
+
+bash audit_report.sh --month january-2026 --no-fetch
+bash audit_report.sh --month february-2026 --no-fetch
+bash audit_report.sh --month june-2026 --no-fetch
